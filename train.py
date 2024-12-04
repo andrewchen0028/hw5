@@ -116,6 +116,10 @@ def parse_args():
     parser.add_argument("--ckpt", type=str, default=None,
                         help="checkpoint path for inference")
 
+    # gradient accumulation steps
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=1,
+                        help="Number of steps to accumulate gradients over")
+
     # first parse of command-line args to check for config file
     args = parser.parse_args()
 
@@ -192,10 +196,10 @@ def main():
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=args.batch_size,
+        num_workers=args.num_workers,
         pin_memory=True,
         shuffle=shuffle,
         sampler=sampler,
-        num_workers=args.num_workers,
         persistent_workers=True
     )
 
@@ -418,6 +422,18 @@ def main():
                 logger.info(f"Epoch {epoch+1}/{args.num_epochs}, Step {step}/{num_update_steps_per_epoch}, Loss {loss.item()} ({loss_m.avg})")
                 wandb_logger.log({'loss': loss_m.avg})
 
+            # Only optimize after accumulating gradients
+            if (step + 1) % args.gradient_accumulation_steps == 0:
+                optimizer.step()
+                lr_scheduler.step()
+                optimizer.zero_grad()
+
+            # Add near the start of training loop
+            if step == 0 and epoch == 0:
+                logger.info(f"Image range: {images.min():.3f} to {images.max():.3f}")
+                logger.info(f"Noise range: {noise.min():.3f} to {noise.max():.3f}")
+                logger.info(f"Model pred range: {model_pred.min():.3f} to {model_pred.max():.3f}")
+
         # validation
         # send unet to evaluation mode
         unet.eval()
@@ -456,6 +472,10 @@ def main():
         if is_primary(args):
             save_checkpoint(unet_wo_ddp, scheduler_wo_ddp, vae_wo_ddp,
                             class_embedder, optimizer, epoch, save_dir=save_dir)
+
+    # Add after dataloader creation
+    logger.info(f"Steps per epoch: {len(train_loader)}")
+    logger.info(f"Total training steps: {args.max_train_steps}")
 
 
 if __name__ == '__main__':
